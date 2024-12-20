@@ -27,6 +27,8 @@ from alpaca.data.historical.stock import StockHistoricalDataClient, StockLatestT
 from alpaca.trading.client import TradingClient, GetAssetsRequest
 from alpaca.trading.requests import GetOptionContractsRequest, LimitOrderRequest, MarketOrderRequest, GetOrdersRequest , ClosePositionRequest
 from alpaca.trading.enums import AssetStatus, ContractType, OrderSide, OrderType, TimeInForce, QueryOrderStatus
+import pytz
+
 
 
 schema_name_global = "paper_trading_test"
@@ -39,7 +41,7 @@ schema_name_global = "paper_trading_test"
 # threshold_perc_for_setting_limit_global = int(
 #     config['TradeConfig']['set_limit'])
 
-PreviousNumberOfDaysToIncludeForFetchingLeads = 10
+PreviousNumberOfDaysToIncludeForFetchingLeads = 5
 
 api_key = "PKE6XBHTF3BZDWYWM7B6"
 secret_key = "rDmFZvisA5TcHqsKO3dcBVNmNK5rjHDRwsGXFvSz"
@@ -221,7 +223,7 @@ class StockAnalyzerUsingAzureAPI:
     api_code = "TryM8ecL_3NA8n8CtLwgowLvm08BAHpC3Xp4_QwxtqTKAzFugvz0LQ=="
 
     @staticmethod
-    def load_data_from_api(st_name, start_date="2020-6-01", end_date="2024-01-30"):
+    def load_data_from_api(st_name, start_date="2023-01-01", end_date="2024-12-12"):
         url = "https://stapi02.azurewebsites.net/api/httpstsignals"
         params = {
             "code": StockAnalyzerUsingAzureAPI.api_code,
@@ -305,6 +307,9 @@ class StockAnalyzerUsingAzureAPI:
 
         green_dates = relevant_data[relevant_data['Color'] == 'green']
 
+        #remove return True when  not mock testing
+        #print("Manual sell signal for mock test")
+        #return True
         if not green_dates.empty:
             print(
                 f"Sell opportunity detected on: {green_dates['Date'].dt.date.tolist()}")
@@ -647,7 +652,7 @@ def paper_trading_dag():
 
         else:
             print(f"Not enough quantity to close. Current size is {position.qty}.")
-
+            return False
         #trade_client.cancel_order_by_id(order.id)
         # Example: Get order info using order_id
         #order_id = order.id
@@ -927,6 +932,9 @@ def paper_trading_dag():
                         table_name='leads', schema_name='stocktrader', columns='stock_name', where_clause="id = %s", where_values=(lead_id,))[0][0]
                 
                 order = create_sell_working_order(lead_name,stock_quantity)
+                if not order:
+                    print ("Postion Qty less than to be sold")
+                    return
 
                 filled = False
                 while (filled == False):
@@ -1199,7 +1207,7 @@ def paper_trading_dag():
         else:
             return leads
 
-    def get_trending_leads(conn, current_date, start_date, end_date, **kwargs):
+    def get_trending_leads(conn, current_date, start_date, end_date):
         '''returns list of tuples [(id,lead_name)]'''
         # Simulate fetching trending leads data
 
@@ -1280,13 +1288,15 @@ def paper_trading_dag():
             print("sorted data 0", sorted_data)
             print("unassigned_units------------------", unassigned_units)
             length_of_unassigned_units = len(unassigned_units)
+            #Adding extra length to unassinged units to have extra leads incase some get removed in price_data_list filter
+            extra_length_of_unassigned_units = length_of_unassigned_units + 3
             print("length_of_unassigned_units-----------",
                   length_of_unassigned_units)
 
             # sorted_data = list(dict.fromkeys(leads))
 
-            if len(sorted_data) > length_of_unassigned_units:
-                sorted_data = sorted_data[:length_of_unassigned_units]
+            if len(sorted_data) > extra_length_of_unassigned_units:
+                sorted_data = sorted_data[:extra_length_of_unassigned_units]
                 print("sorted data--------------", sorted_data)
 
             # for stock in sorted_data:
@@ -1441,7 +1451,8 @@ def paper_trading_dag():
         # fetching account strength from account table
 
         total_remaining_strength = checking_total_remaining_strength(conn)
-
+        #print("Total remaining strength",total_remaining_strength)
+        #print("Num Unassigned Units:",unassigned_units)
         num_unassigned_units = len(unassigned_units)
         strength_to_allocate_each_unit = total_remaining_strength/num_unassigned_units
 
@@ -1768,12 +1779,18 @@ def paper_trading_dag():
 
             lead_index_to_fetch = 0
             leads_fetched_already = []
+            strength_to_allocate_each_unit, total_remaining_strength = analysing_units_to_assign_leads(
+                    unassigned_units=unassigned_units, battle_date=battle_date, conn=conn)
+            print("strength_to_allocate_each_unit---------",
+                strength_to_allocate_each_unit)
             for unit in total_units:
                 print("we are in the loop")
                 print("unit starting is--------", unit)
                 unit_assignment_status = unit[3]
                 print("unit_assignment_status--", unit_assignment_status)
                 unit_assignment_id = unit[0]
+                
+
 
                 if unit_assignment_status == 'assigned':
 
@@ -1899,10 +1916,10 @@ def paper_trading_dag():
                     # fetch the lead data
                     # updating respective deployment data
 
-                    strength_to_allocate_each_unit, total_remaining_strength = analysing_units_to_assign_leads(
-                    unassigned_units=unassigned_units, battle_date=battle_date, conn=conn)
-                    print("strength_to_allocate_each_unit---------",
-                        strength_to_allocate_each_unit)
+                    # strength_to_allocate_each_unit, total_remaining_strength = analysing_units_to_assign_leads(
+                    # unassigned_units=unassigned_units, battle_date=battle_date, conn=conn)
+                    # print("strength_to_allocate_each_unit---------",
+                    #     strength_to_allocate_each_unit)
 
                     strength = math.floor(strength_to_allocate_each_unit)
                     current_date = battle_date
@@ -2093,19 +2110,34 @@ def paper_trading_dag():
     #dates = access_params()
 
 # Assuming you have a datetime object named 'current_date'
-    # current_date = date.today()
-    # current_date_str = current_date.strftime('%Y-%m-%d')  # Format to YYYY-MM-DD
-    # current_date_datetime = datetime.strptime(current_date_str, "%Y-%m-%d")
-    # dates = {"dates": [current_date_datetime]}
+    #current_date = date.today()
+
+
+    
+    # Specify the timezone
+    timezone = pytz.timezone('America/New_York')
+
+    # Get the current datetime in the specified timezone and extract the date
+    current_date = datetime.now(timezone).date()
+
+    print("Current Date in New York:", current_date)
+    current_date_str = current_date.strftime('%Y-%m-%d')  # Format to YYYY-MM-DD
+
+
+    #current_date_str = '2024-12-09'  # Change this to your desired date
+
+
+    current_date_datetime = datetime.strptime(current_date_str, "%Y-%m-%d")
+    dates = {"dates": [current_date_datetime]}
 
     # Example of a specified date string in 'YYYY-MM-DD' format
-    specified_date_str = '2024-10-23'  # Change this to your desired date
+    
 
     # Parse the specified date string to a datetime object
-    specified_date = datetime.strptime(specified_date_str, '%Y-%m-%d')
+    #specified_date = datetime.strptime(specified_date_str, '%Y-%m-%d')
 
     # Create a dictionary with the specified date
-    dates = {"dates": [specified_date]}
+    #dates = {"dates": [specified_date]}
     
     process_dates_task = process_dates(conn=conn, dates=dates)
 
