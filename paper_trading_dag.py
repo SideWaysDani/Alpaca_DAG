@@ -28,6 +28,9 @@ from alpaca.trading.client import TradingClient, GetAssetsRequest
 from alpaca.trading.requests import GetOptionContractsRequest, LimitOrderRequest, MarketOrderRequest, GetOrdersRequest , ClosePositionRequest
 from alpaca.trading.enums import AssetStatus, ContractType, OrderSide, OrderType, TimeInForce, QueryOrderStatus
 import pytz
+from decimal import Decimal
+import time
+
 
 
 
@@ -43,8 +46,8 @@ schema_name_global = "paper_trading_test"
 
 PreviousNumberOfDaysToIncludeForFetchingLeads = 5
 
-api_key = "PKE6XBHTF3BZDWYWM7B6"
-secret_key = "rDmFZvisA5TcHqsKO3dcBVNmNK5rjHDRwsGXFvSz"
+api_key="PKJKPE4IZ0UFXLB4FFAO"
+secret_key="KW0RmdhI28kAh4hNw33gzuYYAnsMfwVANFh959wh"
 paper =  True
 
 trade_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=paper)
@@ -223,7 +226,7 @@ class StockAnalyzerUsingAzureAPI:
     api_code = "TryM8ecL_3NA8n8CtLwgowLvm08BAHpC3Xp4_QwxtqTKAzFugvz0LQ=="
 
     @staticmethod
-    def load_data_from_api(st_name, start_date="2023-01-01", end_date="2024-12-12"):
+    def load_data_from_api(st_name, start_date="2023-01-01", end_date="2025-03-31"):
         url = "https://stapi02.azurewebsites.net/api/httpstsignals"
         params = {
             "code": StockAnalyzerUsingAzureAPI.api_code,
@@ -407,20 +410,20 @@ class StockAnalyzerUsingAzureAPI:
 # Define your default arguments for the DAG
 default_args = {
     'owner': 'airflow',
-    'start_date': days_ago(2),
+    'start_date': days_ago(1),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 0,
     'retry_delay': timedelta(minutes=1),
-    'params': {
-        "start_date": (date.today() - timedelta(days=35)).strftime("%Y-%m-%d"),
-        "end_date": (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")
-    }
+    # 'params': {
+    #     "start_date": (date.today() - timedelta(days=35)).strftime("%Y-%m-%d"),
+    #     "end_date": (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+    # }
 
 }
 
 
-@dag(dag_id='paper_trading_dag', schedule_interval=None, tags=['paper_trading_dag'], render_template_as_native_obj=True, default_args=default_args)
+@dag(dag_id='paper_trading_dag', schedule_interval='00 15 * * *', tags=['paper_trading_dag'], render_template_as_native_obj=True, catchup=False, is_paused_upon_creation=False,  default_args=default_args)
 def paper_trading_dag():
     '''New functions added below'''
     ''''-----------------------------'''
@@ -534,15 +537,23 @@ def paper_trading_dag():
             filled = False
             while (filled == False):
                 print("Checking if BUY order is filled yet...")
+                time.sleep(1)
                 filled = is_order_filled(order.id)
-                   
 
+            ##Code to use the exact entry price
+            order = trade_client.get_order_by_id(order.id)   
+            opening_price = order.filled_avg_price
+            closing_price = opening_price
+            print("order filled avg price",order.filled_avg_price)
+            print("opening_price after making it same as avg filled price")   
+            
             print("Inserting allocation history table")
             value_list = [[allocated_strength, opening_price, lead_id, closing_price,
                            stock_quantity, p_l, valid_from_start_date, valid_to_end_date, unit_assignment_id, allocation_id, status, battle_date_for_allocation_history,deployment_id]]
             print(f'Values received for allocation history{value_list}')
             insert_into_allocation_history(conn, value_list)
-
+            
+            #return opening_price
         except (Exception, psycopg2.DatabaseError) as error:
 
             print(
@@ -634,14 +645,16 @@ def paper_trading_dag():
         
         # Fetch the current position to ensure the quantity is valid
         position = trade_client.get_open_position(symbol)
+        position_qty = Decimal(str(position.qty))
         print(f"Current Position Size: {position.qty}")
 
-        if float(position.qty) >= quantity_to_close:
+        quantity_to_close = position_qty
+        if position_qty >= quantity_to_close:
             # Create a market order to close the specified quantity
             close_order = MarketOrderRequest(
                 symbol=symbol,
                 qty=quantity_to_close,
-                side=OrderSide.SELL if float(position.qty) > 0 else OrderSide.BUY,  # Sell if long, buy if short
+                side=OrderSide.SELL,  # Sell if long, buy if short
                 time_in_force=TimeInForce.DAY,
             )
 
@@ -649,7 +662,7 @@ def paper_trading_dag():
             order = trade_client.submit_order(close_order)
             print(f"Order to close {quantity_to_close} shares of {symbol} submitted.")
             print(f"Order ID: {order.id}, Status: {order.status}")
-
+        
         else:
             print(f"Not enough quantity to close. Current size is {position.qty}.")
             return False
@@ -905,7 +918,9 @@ def paper_trading_dag():
         account table update 
         insert into accoent history table
         """
+        print("In process process_allocations_for_removing_them, the allocations to be removed:",allocations_to_be_removed)
         for poor_performer in allocations_to_be_removed:
+            print("poor_performer in removign loop:", poor_performer)
             # code for getting start date and end date from deployment table
             allocation_id, profit_and_loss, deployment_id, opening_price, closing_price, allocated_strength, stock_quantity, allocation_status = poor_performer
             print("hello 3")
@@ -934,7 +949,8 @@ def paper_trading_dag():
                 order = create_sell_working_order(lead_name,stock_quantity)
                 if not order:
                     print ("Postion Qty less than to be sold")
-                    return
+                    continue
+                    
 
                 filled = False
                 while (filled == False):
@@ -1124,6 +1140,13 @@ def paper_trading_dag():
     #         return
 
     def remove_allocation_to_sell_using_StockAnalyzerUsingAzureAPI(dbhelper: GenericDBHelper, conn, battle_date):
+        # Convert battle_date string to a datetime object
+        battle_date_obj = datetime.strptime(battle_date, "%Y-%m-%d")
+
+        # Calculate one day before battle_date
+        previous_date = (battle_date_obj - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        
 
         lead_and_allocations_data = get_lead_name_mapping_id_from_allocation(
             conn=conn)
@@ -1133,7 +1156,7 @@ def paper_trading_dag():
             for result in lead_and_allocations_data:
                 stock_name = result[-2]
                 buy_sell_status = StockAnalyzerUsingAzureAPI.analyze_stock(
-                    sym_name=stock_name, start_date=battle_date, end_date=battle_date)
+                    sym_name=stock_name, start_date=previous_date, end_date=battle_date)
                 sell_status = buy_sell_status["sell_status"]
                 if sell_status:
                     # appending only
@@ -1146,6 +1169,9 @@ def paper_trading_dag():
                     print("DIDn't recieve selling signal")
             process_allocations_for_removing_them(
                 allocations_to_be_removed=allocations_to_sell, allocation_history_status='api_signal sell', battle_date=battle_date)
+            
+
+            
         else:
             print("no allocation found in allocation table")
             return
@@ -1216,7 +1242,13 @@ def paper_trading_dag():
         # query = "SELECT * FROM stocktrader.stocks_leads WHERE start_date = %s"
 
         # query = "SELECT * FROM stocktrader.stocks_leads WHERE %s BETWEEN stocks_leads.start_date AND stocks_leads.end_date"
-        query = "SELECT id,stock_name FROM stocktrader.leads WHERE leads.lead_date BETWEEN %s AND %s and leads.endorsement = 'Yes'"
+        query = """
+                SELECT id, stock_name 
+                FROM stocktrader.leads 
+                WHERE leads.lead_date BETWEEN %s AND %s 
+                AND leads.endorsement = 'Yes'
+                ORDER BY leads.lead_date DESC
+                """
 
         # query = "SELECT * FROM stocktrader.stocks_leads"
         cur.execute(query, (start_date, end_date,))
@@ -1757,13 +1789,14 @@ def paper_trading_dag():
             # if no unassigned units then no need to fetch leads so leads_data_from_table variable is empty
             if not unassigned_units:
                 print("No unassigned units found. Skipping fetching leads.")
-                leads_data_from_table = []
+                #leads_data_from_table = []
 
             num_unassigned_units = len(unassigned_units)
             num_assigned_units = len(total_units) - num_unassigned_units
 
             
-
+            # print("num_assigned_units:", num_assigned_units)
+            # print("Length of leads_data_from_table:", len(leads_data_from_table))
             if num_assigned_units == 0 and not len(leads_data_from_table):
                 print(
                     'skipping this day because no assigned unit and no lead datafound from table')
@@ -1779,10 +1812,11 @@ def paper_trading_dag():
 
             lead_index_to_fetch = 0
             leads_fetched_already = []
-            strength_to_allocate_each_unit, total_remaining_strength = analysing_units_to_assign_leads(
+            if len(unassigned_units) > 0:
+                strength_to_allocate_each_unit, total_remaining_strength = analysing_units_to_assign_leads(
                     unassigned_units=unassigned_units, battle_date=battle_date, conn=conn)
-            print("strength_to_allocate_each_unit---------",
-                strength_to_allocate_each_unit)
+                print("strength_to_allocate_each_unit---------",
+                    strength_to_allocate_each_unit)
             for unit in total_units:
                 print("we are in the loop")
                 print("unit starting is--------", unit)
@@ -1864,8 +1898,20 @@ def paper_trading_dag():
                         # update_deployment(conn=conn, deployment_id=deployment_id, columns_to_be_updated=[
                         #     'lead_id'], new_values=[new_lead_id])
 
-                        closing_price_for_current_date = float(
-                            new_lead_closing_price)
+                        positions = trade_client.get_all_positions()  
+                        if not positions:
+                            print("No open positions found.")
+                        else:
+                            for pos in positions:
+                                
+                                
+                                if pos.symbol == lead_name:
+                                    print(f"Getting curernt lead price from Alpaca Position: {pos.symbol}, Qty: {pos.qty}, Side: {pos.side}"
+                                        f"Market Value: {pos.market_value}, Avg Entry Price: {pos.avg_entry_price} , Current Price: {pos.current_price} ")
+                                    closing_price_for_current_date = float(pos.current_price)
+
+                        #closing_price_for_current_date = float(
+                        #    new_lead_closing_price)
                         print("in condition", "closing_price_for_current_date",
                               closing_price_for_current_date)
                         opening_price_for_current_date = float(
@@ -1984,22 +2030,31 @@ def paper_trading_dag():
 
                     # inserting to allocations hereeeeeeee
 
-                    opening_price = current_lead[3]
-                    closing_price = 0
+                    opening_price = current_lead[4] #Netring closing price into opening price as well cuz closing price is current price at the time of allocation, aka buying
+                    closing_price = current_lead[4]
                     print("opening_price-----", opening_price)
                     print("closing_price-----", closing_price)
 
                     stock_quantity = strength/opening_price
-                    profit_and_loss = 0
 
+                    profit_and_loss = calculate_profit_and_loss(
+                        closing_price, opening_price, stock_quantity)
 
+                    profit_and_loss_percent = calculate_profit_and_loss_percent(
+                        closing_price, opening_price, stock_quantity)
                     
 
                     values_list = [[profit_and_loss, deployment_id, opening_price,
                                     closing_price, strength, stock_quantity, 'materlized']]
                     insert_into_allocation(conn, values_list, battle_date)
 
-                    
+                    allocation_id = fetch_allocation_id(conn, deployment_id)
+
+
+                    performance_values_list = [
+                        (unit_assignment_id, battle_date, profit_and_loss, lead_id, battle_date, battle_date, allocation_id, profit_and_loss_percent)]
+                    inserting_into_performace(
+                        conn=conn, values_list=performance_values_list)
 
                     # inseritng to allocation history
                     # Insterting into allocation automatically adds corresponding allocation history entry
@@ -2013,29 +2068,32 @@ def paper_trading_dag():
                     #                                      columns='opening_price', where_clause='leads_id = %s', where_values=(lead_id,))
 
                     # opening_price = opening_price[0][0]
-                    closing_price = current_lead[4]
-                    print("opening_price-----", opening_price)
-                    print("closing_price-----", closing_price)
+                    
+                    
+                    
+                    # closing_price = current_lead[4]
+                    # print("opening_price-----", opening_price)
+                    # print("closing_price-----", closing_price)
 
-                    profit_and_loss = calculate_profit_and_loss(
-                        closing_price, opening_price, stock_quantity)
+                    # profit_and_loss = calculate_profit_and_loss(
+                    #     closing_price, opening_price, stock_quantity)
 
-                    profit_and_loss_percent = calculate_profit_and_loss_percent(
-                        closing_price, opening_price, stock_quantity)
+                    # profit_and_loss_percent = calculate_profit_and_loss_percent(
+                    #     closing_price, opening_price, stock_quantity)
 
-                    allocation_id = fetch_allocation_id(conn, deployment_id)
+                    # allocation_id = fetch_allocation_id(conn, deployment_id)
 
-                    # day end strength of unit
-                    # strength = float(strength)+float(profit_and_loss)
+                    # # day end strength of unit
+                    # # strength = float(strength)+float(profit_and_loss)
 
-                    update_allocation(conn=conn, allocation_id=allocation_id, columns_to_be_updated=[
-                        'closing_price', 'profit_and_loss'], new_values=[closing_price, profit_and_loss],
-                        start_date_for_allocation_history=current_date, end_date_for_allocation_history=current_date, current_battle_date=battle_date)
+                    # update_allocation(conn=conn, allocation_id=allocation_id, columns_to_be_updated=[
+                    #     'closing_price', 'profit_and_loss'], new_values=[closing_price, profit_and_loss],
+                    #     start_date_for_allocation_history=current_date, end_date_for_allocation_history=current_date, current_battle_date=battle_date)
 
-                    performance_values_list = [
-                        (unit_assignment_id, battle_date, profit_and_loss, lead_id, battle_date, battle_date, allocation_id, profit_and_loss_percent)]
-                    inserting_into_performace(
-                        conn=conn, values_list=performance_values_list)
+                    # performance_values_list = [
+                    #     (unit_assignment_id, battle_date, profit_and_loss, lead_id, battle_date, battle_date, allocation_id, profit_and_loss_percent)]
+                    # inserting_into_performace(
+                    #     conn=conn, values_list=performance_values_list)
 
                 elif unit in unassigned_units and not leads_data_from_table:
                     print(
