@@ -30,7 +30,9 @@ from alpaca.trading.enums import AssetStatus, ContractType, OrderSide, OrderType
 import pytz
 from decimal import Decimal
 import time
-
+from alpaca_trade_api.rest import REST
+from alpaca.data import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestTradeRequest
 
 
 
@@ -46,8 +48,8 @@ schema_name_global = "paper_trading_test"
 
 PreviousNumberOfDaysToIncludeForFetchingLeads = 5
 
-api_key="PKJKPE4IZ0UFXLB4FFAO"
-secret_key="KW0RmdhI28kAh4hNw33gzuYYAnsMfwVANFh959wh"
+api_key="PKUE8XDDKPS7YPMXE5KN"
+secret_key="8u6ldmz6PlrUZqgsuCvoAhwPPpTbFegkP7ppEEeV"
 paper =  True
 
 trade_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=paper)
@@ -531,7 +533,7 @@ def paper_trading_dag():
             valid_to_end_date = end_date_depl
             status = values_list[0][6]
 
-            order = create_buy_working_order(lead_name, stock_quantity)
+            order = create_buy_working_order(lead_name, stock_quantity,allocated_strength)
 
 
             filled = False
@@ -600,18 +602,19 @@ def paper_trading_dag():
         insert_into_deployment_history(conn, values_list)
 
 
-    def create_buy_working_order(symbol_to_buy, quantity):
+    def create_buy_working_order(symbol_to_buy, quantity, strength):
         
 
-        print(f'Creating Buy Working Order for {symbol_to_buy} with qty {quantity}')
+        print(f'Creating Buy Working Order for {symbol_to_buy} with strength {strength}')
 
         # Example: Place a market order for an option contract
         order_request = MarketOrderRequest(
             symbol=symbol_to_buy,  # Underlying symbol
-            qty=quantity,          # Number of option contracts
             side=OrderSide.BUY,
-            time_in_force=TimeInForce.DAY  # Good Till Canceled
+            time_in_force=TimeInForce.DAY,  # Good Till Canceled
+            notional = strength
         )
+        #            qty=quantity,          # Number of option contracts
 
         order = trade_client.submit_order(order_request)
         #trade_client.cancel_order_by_id(order.id)
@@ -2029,9 +2032,34 @@ def paper_trading_dag():
                     # change is deployment status automatically adds new entry to deployment history to reflect the updated deployment status
 
                     # inserting to allocations hereeeeeeee
+                    base_url = "https://paper-api.alpaca.markets"  # Use 'https://api.alpaca.markets' for live trading
 
-                    opening_price = current_lead[4] #Netring closing price into opening price as well cuz closing price is current price at the time of allocation, aka buying
-                    closing_price = current_lead[4]
+                    # Initialize the REST API connection
+                    market_api = REST(api_key, secret_key, base_url, api_version='v2')
+
+                    # Specify the stock symbol
+                    symbol = current_lead[1]
+
+                    market_api_2 = StockHistoricalDataClient(api_key, secret_key)
+
+                    latest_trade_request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+                    latest_trade = market_api_2.get_stock_latest_trade(latest_trade_request)
+
+                    current_price = latest_trade[symbol].price  # Extracting the price
+
+                    # print(price) 
+
+                    # # Fetch the latest trade information
+                    # latest_trade = market_api.get_latest_trade(symbol)
+
+                    # # Extract and print the current price
+                    # current_price = latest_trade.price
+                    print(f"The current price of {symbol} is ${current_price:.2f}")
+
+
+
+                    opening_price = current_price #Netring closing price into opening price as well cuz closing price is current price at the time of allocation, aka buying
+                    closing_price = current_price
                     print("opening_price-----", opening_price)
                     print("closing_price-----", closing_price)
 
